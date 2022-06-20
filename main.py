@@ -1,5 +1,7 @@
+import functools
+
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import youtube_dl
 import requests
 import random
@@ -29,6 +31,7 @@ ydl_opts = {
 }
 
 queue = []
+start_task = False
 current_track = 0
 loop_track = False
 loop_list = False
@@ -99,14 +102,19 @@ async def play(ctx, *, search=""):
     if search:
         # Extract Meta Data
         ydl_opts["extract_flat"] = True
-
+        current_loop = asyncio.get_running_loop()
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
             try:
-                meta = ydl.extract_info(search, download=False)
+                partial = functools.partial(
+                    ydl.extract_info, search, download=False)
+                meta = await current_loop.run_in_executor(None, partial)
                 await ctx.reply(f":white_check_mark: Exact Match Found For: `{search}`")
             except youtube_dl.utils.DownloadError:
                 await ctx.reply(f":mag: Searching For: `{search}` ")
-                meta = ydl.extract_info(f"ytsearch:{search}", download=False)['entries'][0]
+                partial = functools.partial(
+                    ydl.extract_info, f"ytsearch:{search}", download=False)
+                meta = await current_loop.run_in_executor(None, partial)
+                meta = meta['entries'][0]
 
         # Enqueue tracks
         len_q_old = len(queue)
@@ -143,7 +151,6 @@ async def play(ctx, *, search=""):
                                 colour=embed_colour)
                 nq_embed.set_author(name="➕ Adding Playlist to Queue ➕",
                                     icon_url=embed_icon)
-
                 req = requests.get(f"https://music.youtube.com/playlist?list={meta['id']}", "html.parser")
                 source = req.text
                 marker = source.find("https://yt3.ggpht.com/") + 22
@@ -165,9 +172,10 @@ async def play(ctx, *, search=""):
         nq_embed.set_thumbnail(url=nq_thumb_url)
         await ctx.send(embed=nq_embed)
 
-        # Cache future tracks for faster speeds
+        # Cache future tracks for faster
         for track in range(len_q_old, len(queue)):
-            await filter_formats(track)
+            tasks.loop(count=1)(filter_formats).start(track)
+
     else:
         if not vc_connection.is_playing() and not vc_connection.is_paused():
             if current_track > len(queue) - 1:
@@ -179,12 +187,14 @@ async def play(ctx, *, search=""):
 
 
 async def filter_formats(track: int):
+    print(track)
     ydl_opts["extract_flat"] = False
     if "formats" not in str(queue[track]):
+        current_loop = asyncio.get_running_loop()
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            track_meta = ydl.extract_info(
-                f"https://www.youtube.com/watch?v={queue[track]['id']}",
-                download=False)
+            partial = functools.partial(
+                ydl.extract_info, f"https://www.youtube.com/watch?v={queue[track]['id']}", download=False)
+            track_meta = await current_loop.run_in_executor(None, partial)
             queue[track]["formats"] = track_meta["formats"]
 
     if isinstance((queue[track]["formats"]), list):
