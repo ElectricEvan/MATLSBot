@@ -172,9 +172,13 @@ async def play(ctx, *, search=""):
         nq_embed.set_thumbnail(url=nq_thumb_url)
         await ctx.send(embed=nq_embed)
 
-        # Cache future tracks for faster
-        for track in range(len_q_old, len(queue)):
+        await asyncio.sleep(2)
+        # Start caching future tracks
+        for track in range(len_q_old, len(queue), 6):
             tasks.loop(count=1)(filter_formats).start(track)
+            tasks.loop(count=1)(filter_formats).start(track+1)
+            tasks.loop(count=1)(filter_formats).start(track+2)
+            await filter_formats(track+3)
 
     else:
         if not vc_connection.is_playing() and not vc_connection.is_paused():
