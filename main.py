@@ -174,11 +174,8 @@ async def play(ctx, *, search=""):
 
         await asyncio.sleep(2)
         # Start caching future tracks
-        for track in range(len_q_old, len(queue), 6):
-            tasks.loop(count=1)(filter_formats).start(track)
-            tasks.loop(count=1)(filter_formats).start(track+1)
-            tasks.loop(count=1)(filter_formats).start(track+2)
-            await filter_formats(track+3)
+        for track in range(len_q_old, len(queue)):
+            await filter_formats(track)
 
     else:
         if not vc_connection.is_playing() and not vc_connection.is_paused():
