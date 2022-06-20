@@ -1,5 +1,4 @@
 import functools
-
 import discord
 from discord.ext import commands, tasks
 import youtube_dl
@@ -19,6 +18,7 @@ ydl_opts = {
     'format': 'bestaudio/best',
     'extractaudio': True,
     'extract_flat': False,
+    'youtube_include_dash_manifest': False,
     'restrictfilenames': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -199,11 +199,12 @@ async def filter_formats(track: int):
             queue[track]["formats"] = track_meta["formats"]
 
     if isinstance((queue[track]["formats"]), list):
+        index = 0
         for i, formats in enumerate(queue[track]["formats"]):
-            if formats["ext"] == "m4a" and "manifest" not in str(formats):
+            if formats["ext"] == "m4a":
                 index = i
-                queue[track]["formats"] = queue[track]["formats"][index]["url"]
                 break
+        queue[track]["formats"] = queue[track]["formats"][index]["url"]
 
 
 def load_track(ctx, vc_connection, track: int):
