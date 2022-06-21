@@ -517,7 +517,8 @@ async def remove(ctx, num=f""):
     else:
         track_info = queue[num]
         await ctx.reply(f"Removing `Track #{num}` | "
-                        f"[{track_info['title']}](https://www.youtube.com/watch?v={track_info['id']})")
+                        f"[{track_info['title']}]")
+        # (https://www.youtube.com/watch?v={track_info['id']})
         queue.pop(num)
         if num == current_track:
             vc_connection.stop()
