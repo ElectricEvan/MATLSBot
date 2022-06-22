@@ -2,6 +2,7 @@ import functools
 import discord
 from discord.ext import commands
 import youtube_dl
+from pytube import YouTube, exceptions
 import requests
 import random
 import json
@@ -17,8 +18,8 @@ client = commands.Bot(command_prefix="-", intents=intents, case_insensitive=True
 ydl_opts = {
     'format': 'bestaudio/best',
     'extractaudio': True,
-    'extract_flat': False,
     'youtube_include_dash_manifest': False,
+    'age_limit': 64,
     'restrictfilenames': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -27,7 +28,7 @@ ydl_opts = {
     'quiet': True,
     'no_warnings': True,
     'source_address': '0.0.0.0',
-    'force-ipv4': True,
+    'force-ipv4': True
 }
 
 queue = []
@@ -122,19 +123,20 @@ async def play(ctx, *, search=""):
     if search:
         # Extract Meta Data
         ydl_opts["extract_flat"] = True
-        current_loop = asyncio.get_running_loop()
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            try:
-                partial = functools.partial(
-                    ydl.extract_info, search, download=False)
-                meta = await current_loop.run_in_executor(None, partial)
+        if "list=" in search and "youtube.com/" in search:
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                meta = ydl.extract_info(search, download=False)
                 await ctx.reply(f":white_check_mark: Exact Match Found For: `{search}`")
-            except youtube_dl.utils.DownloadError:
-                await ctx.reply(f":mag: Searching For: `{search}` ")
-                partial = functools.partial(
-                    ydl.extract_info, f"ytsearch:{search}", download=False)
-                meta = await current_loop.run_in_executor(None, partial)
-                meta = meta['entries'][0]
+        else:
+            try:
+                yt = YouTube(search)
+                meta = {'id': yt.video_id, 'title': yt.title, 'duration': yt.length}
+            except exceptions.RegexMatchError:
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    meta = ydl.extract_info(f"ytsearch:{search}", download=False)
+                    meta = meta['entries'][0]
+        with open("test2.json", "w") as file:
+            json.dump(meta, file, indent=4)
 
         # Queue tracks
         len_q_old = len(queue)
@@ -241,7 +243,6 @@ def load_track(ctx, vc_connection, track: int):
         json.dump(queue, file, indent=4)
 
 
-@client.command()
 async def auto_next(ctx):
     vc_connection = discord.utils.get(client.voice_clients, guild=ctx.guild)
     global current_track, stream_errors
@@ -256,12 +257,13 @@ async def auto_next(ctx):
         elif stream_errors == 2:
             for track in range(len(queue)):
                 queue[track].pop("formats")
-                await filter_formats(current_track)
-                load_track(ctx, vc_connection, current_track)
-                return print("Probably Error 403: Expired Links")
+            print("Probably Error 403: Expired Links")
+            await filter_formats(current_track)
+            return load_track(ctx, vc_connection, current_track)
+
+        print("Probably Error 403: Glitched Stream")
         await filter_formats(current_track)
-        load_track(ctx, vc_connection, current_track)
-        return print("Probably Error 403: Glitched Stream")
+        return load_track(ctx, vc_connection, current_track)
     else:
         stream_errors = 0
 
@@ -285,7 +287,7 @@ async def leave(ctx):
         elif vc_connection.channel != ctx.author.voice.channel:
             return await ctx.reply("You must be in MY voice channel where everyone is at to use music commands")
         await ctx.reply("Sayonara!")
-        await vc_connection.disconnect()
+        await vc_connection.disconnect(force=True)
     else:
         await ctx.reply("I already left >:(")
 
@@ -312,20 +314,20 @@ async def pause(ctx):
 
 @client.command(aliases=["next"])
 async def skip(ctx):
-    vc_connection = await check_voice(ctx)
-    if isinstance(vc_connection, discord.message.Message):
-        return
-    if not await vc_manners(ctx, vc_connection):
-        return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
-
     command = ctx.invoked_with.lower()
     global current_track, ref_time
     if command == "next" or command == "skip":
+        vc_connection = await check_voice(ctx)
+        if isinstance(vc_connection, discord.message.Message):
+            return
+        if not await vc_manners(ctx, vc_connection):
+            return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
+
         if current_track + 1 >= len(queue) and loop_type != 2:
             await ctx.reply("No more tracks in queue.")
         elif loop_type == 2:
-            track_info = queue[0]
-            await ctx.reply(f":fast_forward: Skipping track to `Track #{0}` | "
+            track_info = queue[current_track + 1]
+            await ctx.reply(f":fast_forward: Skipping track to `Track #{current_track + 1}` | "
                             f"[{track_info['title']}]")
             # (https://www.youtube.com/watch?v={track_info['id']})
         else:
@@ -375,6 +377,8 @@ async def clearq(ctx):
     vc_connection = await check_voice(ctx)
     if isinstance(vc_connection, discord.message.Message):
         return
+    if not await vc_manners(ctx, vc_connection):
+        return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
     global current_track
     await ctx.reply(":dvd: Clearing All Tracks!")
@@ -412,6 +416,8 @@ async def shuffle(ctx):
     vc_connection = await check_voice(ctx)
     if isinstance(vc_connection, discord.message.Message):
         return
+    if not await vc_manners(ctx, vc_connection):
+        return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
     global queue
     if len(queue) - current_track + 1 >= 2:
@@ -443,7 +449,7 @@ async def switch(ctx, num=""):
     global current_track
     if num == current_track and queue:
         await ctx.reply("I'm playing that Track right now.")
-    elif num > len(queue) - 1 or num < 1 or not queue:
+    elif num > len(queue) - 1 or num < 0 or not queue:
         await ctx.reply("**OutOfBounds Argument:** The given `Track Number (int)` is out of range")
     else:
         track_info = queue[num]
@@ -504,6 +510,8 @@ async def remove(ctx, num=f""):
     vc_connection = await check_voice(ctx)
     if isinstance(vc_connection, discord.message.Message):
         return
+    if not await vc_manners(ctx, vc_connection):
+        return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
     if not num:
         num = len(queue) - 1
@@ -557,5 +565,11 @@ async def seek(ctx, seek_t=""):
     seek_time = secs
     vc_connection.stop()
 
+
+@client.command()
+async def load_test_case(ctx):
+    global queue
+    with open("test2.json", "r") as file:
+        queue = json.load(file)
 
 client.run(os.getenv("DISCORD_TOKEN"))
