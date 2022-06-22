@@ -124,9 +124,12 @@ async def play(ctx, *, search=""):
         # Extract Meta Data
         ydl_opts["extract_flat"] = True
         if "list=" in search and "youtube.com/" in search:
-            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                meta = ydl.extract_info(search, download=False)
-                await ctx.reply(f":white_check_mark: Exact Match Found For: `{search}`")
+            try:
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    meta = ydl.extract_info(search, download=False)
+                    await ctx.reply(f":white_check_mark: Exact Match Found For: `{search}`")
+            except youtube_dl.DownloadError:
+                pass
         else:
             try:
                 yt = YouTube(search)
@@ -135,8 +138,6 @@ async def play(ctx, *, search=""):
                 with youtube_dl.YoutubeDL(ydl_opts) as ydl:
                     meta = ydl.extract_info(f"ytsearch:{search}", download=False)
                     meta = meta['entries'][0]
-        with open("test2.json", "w") as file:
-            json.dump(meta, file, indent=4)
 
         # Queue tracks
         len_q_old = len(queue)
@@ -253,17 +254,18 @@ async def auto_next(ctx):
             current_track += 1
             await filter_formats(current_track)
             load_track(ctx, vc_connection, current_track)
-            return ctx.send(f"Track failed to play. Count = {stream_errors}")
+            return await ctx.send(f"Track failed to play. Count = {stream_errors} times.")
         elif stream_errors == 2:
-            for track in range(len(queue)):
-                queue[track].pop("formats")
-            print("Probably Error 403: Expired Links")
+            queue[current_track].pop("formats")
             await filter_formats(current_track)
-            return load_track(ctx, vc_connection, current_track)
-
-        print("Probably Error 403: Glitched Stream")
+            load_track(ctx, vc_connection, current_track)
+            print("Probably Error 403: Expired Links")
+            for track in range(current_track+1, len(queue)):
+                queue[current_track].pop("formats")
+            return
         await filter_formats(current_track)
-        return load_track(ctx, vc_connection, current_track)
+        load_track(ctx, vc_connection, current_track)
+        return print("Probably Error 403: Glitched Stream")
     else:
         stream_errors = 0
 
