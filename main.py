@@ -19,7 +19,6 @@ ydl_opts = {
     'format': 'bestaudio/best',
     'extractaudio': True,
     'youtube_include_dash_manifest': False,
-    'age_limit': 64,
     'restrictfilenames': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
@@ -36,7 +35,7 @@ start_task = False
 current_track = 0
 stream_errors = 0
 loop_type = 0
-ref_time = 0
+ref_time = time.time()
 pause_time = 0
 seek_time = 0
 embed_icon = "https://music.youtube.com/img/favicon_144.png"
@@ -46,6 +45,29 @@ embed_colour = 0xff0000
 @client.event
 async def on_ready():
     print("\033[0m Bot is ready...")
+    await client.change_presence(activity=discord.Game(name="Alpha-Danielle V0.1.0.4"))
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    vc_connection = discord.utils.get(client.voice_clients, guild=member.guild)
+
+    global seek_time, current_track, stream_errors
+    if before.channel is not None:
+        if member == client.user:
+            seek_time = time.time() - ref_time - 3
+            stream_errors = -2
+            if seek_time < 0 or not queue:
+                seek_time = 0
+            await client.change_presence(activity=discord.Game(name="Alpha-Danielle V0.1.0.4"))
+        elif member != client.user and vc_connection:
+            if before.channel == vc_connection.channel and len(vc_connection.channel.members) == 1:
+                seek_time = time.time() - ref_time - 3
+                stream_errors = -2
+                if seek_time < 0 or not queue:
+                    seek_time = 0
+                await vc_connection.disconnect(force=True)
+                await client.change_presence(activity=discord.Game(name="Alpha-Danielle V0.1.0.4"))
 
 
 async def check_voice(ctx):
@@ -73,13 +95,16 @@ async def check_voice(ctx):
 async def vc_manners(ctx, vc_connection):
     if discord.utils.get(ctx.guild.roles, name="DJ") in ctx.author.roles:
         return True
+
+    if current_track >= len(queue) or current_track < 0:
+        return True
     requester = queue[current_track]["Requester"]
     if requester == ctx.author.mention:
         return True
     elif len(vc_connection.channel.members) <= 2:
         return True
-    else:
-        return False
+
+    return False
 
 
 def time_convert(seconds):
@@ -95,6 +120,15 @@ def time_convert(seconds):
         return f"{hours}:{mins}:{secs}"
     else:
         return f"{mins}:{secs}"
+
+
+def loop_gui():
+    if loop_type == 1:
+        return "🔂 | "
+    elif loop_type == 2:
+        return "🔁 | "
+    else:
+        return ""
 
 
 @client.listen()
@@ -119,25 +153,48 @@ async def play(ctx, *, search=""):
     if isinstance(vc_connection, discord.message.Message):
         return
 
-    global current_track
+    global current_track, stream_errors
+    if stream_errors == -2:
+        stream_errors = 0
+        if queue:
+            await ctx.send(":floppy_disk: Attempting to load previous session...")
+            await now(ctx)
+
+    current_loop = asyncio.get_running_loop()
     if search:
-        # Extract Meta Data
+        # Extract Playlist Meta Data
         ydl_opts["extract_flat"] = True
         if "list=" in search and "youtube.com/" in search:
+            await ctx.reply(f":globe_with_meridians: Getting URL For: `{search}`")
             try:
                 with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                    meta = ydl.extract_info(search, download=False)
-                    await ctx.reply(f":white_check_mark: Exact Match Found For: `{search}`")
+                    partial = functools.partial(ydl.extract_info, search, download=False)
+                    meta = await current_loop.run_in_executor(None, partial)
+                if "title" not in meta:
+                    raise youtube_dl.DownloadError
             except youtube_dl.DownloadError:
-                pass
-        else:
+                return await ctx.reply(f"**InvalidPlaylist:** Check your URL ")
+
+        # Extract Video Meta Data
+        elif "youtube.com/watch?v=" in search:
+            # For partial to work
+            def get_meta(vid):
+                return {'id': vid.video_id, 'title': vid.title, 'duration': vid.length}
             try:
                 yt = YouTube(search)
-                meta = {'id': yt.video_id, 'title': yt.title, 'duration': yt.length}
+                await ctx.reply(f":globe_with_meridians: Getting URL For: `{search}`")
+                partial = functools.partial(get_meta, yt)
+                meta = await current_loop.run_in_executor(None, partial)
             except exceptions.RegexMatchError:
-                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                    meta = ydl.extract_info(f"ytsearch:{search}", download=False)
-                    meta = meta['entries'][0]
+                return await ctx.reply(f"**InvalidPlaylist:** Check your URL ")
+        # Extract Search Meta Data
+        else:
+            # For partial to work
+            await ctx.reply(f":mag: Searching For: `{search}`")
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                partial = functools.partial(ydl.extract_info, f"ytsearch:{search}", download=False)
+                meta = await current_loop.run_in_executor(None, partial)
+                meta = meta['entries'][0]
 
         # Queue tracks
         len_q_old = len(queue)
@@ -151,11 +208,11 @@ async def play(ctx, *, search=""):
             queue.append(meta)
 
         # Play tracks now, unless already playing
-        if not vc_connection.is_playing() and not vc_connection.is_paused():
+        if vc_connection.is_connected and not vc_connection.is_playing() and not vc_connection.is_paused():
             if current_track > len(queue) - 1:
                 current_track = 0
             await filter_formats(current_track)
-            load_track(ctx, vc_connection, current_track)
+            await load_track(ctx, vc_connection, current_track)
 
         # Post Processing. Notice it comes after playing the track? EFFICIENCY
         for track in range(len_q_old, len(queue)):
@@ -167,25 +224,27 @@ async def play(ctx, *, search=""):
             if meta["_type"] == "playlist":
                 # Embed
                 nq_embed = discord.Embed(
-                    description=f'**[{meta["title"]}](https://www.youtube.com/playlist?list={meta["id"]})**\n'
-                                f'**Track #{len(queue) - len(meta["entries"])} - {len(queue) - 1}**\n'
+                    description=f'{loop_gui()}**[{meta["title"]}](https://www.youtube.com/playlist?list={meta["id"]})**'
+                                f'\n**Track #{len(queue) - len(meta["entries"])} - {len(queue) - 1}**\n'
                                 f'\n**Total Queued:** {len(meta["entries"])}\n'
                                 f'**Tracks Ahead:** {len(queue) - len(meta["entries"]) - current_track}',
                                 colour=embed_colour)
-                nq_embed.set_author(name="➕ Adding Playlist to Queue ➕",
+                nq_embed.set_author(name=f"➕ Adding Playlist to Queue ➕",
                                     icon_url=embed_icon)
-                req = requests.get(f"https://music.youtube.com/playlist?list={meta['id']}", "html.parser")
-                source = req.text
+                partial = functools.partial(requests.get, f"https://music.youtube.com/playlist?list={meta['id']}")
+                source = await current_loop.run_in_executor(None, partial)
+                source = source.text
                 marker = source.find("https://yt3.ggpht.com/") + 22
                 if marker != 21:
-                    nq_thumb_url = f"https://yt3.ggpht.com/{source[marker:marker + 75]}"
+                    nq_thumb_url = f"https://yt3.ggpht.com/{source[marker:marker + 100]}"
+                    nq_thumb_url = nq_thumb_url[:nq_thumb_url.find('=')]
             else:
                 raise KeyError
         # Not playlist
         except KeyError:
             # Embed
             nq_embed = discord.Embed(
-                description=f'**[{meta["title"]}](https://www.youtube.com/watch?v={meta["id"]})**\n\n'
+                description=f'{loop_gui()}**[{meta["title"]}](https://www.youtube.com/watch?v={meta["id"]})**\n\n'
                             f'**Track #{len(queue) - 1}**\n'
                             f'**Tracks Ahead:** {len(queue) - 1 - current_track}',
                             colour=embed_colour)
@@ -201,17 +260,21 @@ async def play(ctx, *, search=""):
         #    await filter_formats(track)
 
     elif queue:
+        # Attempted error correction for the psychos who manually disconnects bot often
+        if not vc_connection.is_connected():
+            await vc_connection.disconnect(force=True)
+            vc_connection = await check_voice(ctx)
+        # Allows easy replay access
         if not vc_connection.is_playing() and not vc_connection.is_paused():
             if current_track > len(queue) - 1:
                 current_track = 0
             await filter_formats(current_track)
-            load_track(ctx, vc_connection, current_track)
+            await load_track(ctx, vc_connection, current_track)
         else:
             await pause(ctx)
 
 
 async def filter_formats(track: int):
-    print(track)
     ydl_opts["extract_flat"] = False
     if "formats" not in str(queue[track]):
         current_loop = asyncio.get_running_loop()
@@ -230,14 +293,17 @@ async def filter_formats(track: int):
         queue[track]["formats"] = queue[track]["formats"][index]["url"]
 
 
-def load_track(ctx, vc_connection, track: int):
-    global ref_time, seek_time
+async def load_track(ctx, vc_connection, track: int):
+    global ref_time
+
     stream_link = queue[track]["formats"]
     ffmpeg_opts = {"before_options": f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {seek_time}"}
     vc_connection.play(discord.FFmpegPCMAudio(source=stream_link, **ffmpeg_opts),
-                       after=lambda e: asyncio.run_coroutine_threadsafe(auto_next(ctx), client.loop))
+                       after=lambda e: print(e) if e else asyncio.run_coroutine_threadsafe(auto_next(ctx), client.loop))
     ref_time = time.time() - seek_time
-    seek_time = 0
+
+    await client.change_presence(activity=discord.Streaming(
+        name=f"{queue[track]['title']}", url=f"https://www.youtube.com/watch?v={queue[track]['id']})"))
 
     # TEST
     with open("test.json", "w") as file:
@@ -246,38 +312,45 @@ def load_track(ctx, vc_connection, track: int):
 
 async def auto_next(ctx):
     vc_connection = discord.utils.get(client.voice_clients, guild=ctx.guild)
-    global current_track, stream_errors
-
-    if time.time() - ref_time < 3:
-        stream_errors += 1
-        if stream_errors > 3:
-            current_track += 1
-            await filter_formats(current_track)
-            load_track(ctx, vc_connection, current_track)
-            return await ctx.send(f"Track failed to play. Count = {stream_errors} times.")
-        elif stream_errors == 2:
-            queue[current_track].pop("formats")
-            await filter_formats(current_track)
-            load_track(ctx, vc_connection, current_track)
-            print("Probably Error 403: Expired Links")
-            for track in range(current_track+1, len(queue)):
-                queue[current_track].pop("formats")
-            return
+    global current_track, stream_errors, seek_time
+    if stream_errors == -2:
         await filter_formats(current_track)
-        load_track(ctx, vc_connection, current_track)
-        return print("Probably Error 403: Glitched Stream")
+        await load_track(ctx, vc_connection, current_track)
+        return
+
+    if time.time() - ref_time < queue[current_track]["duration"]-1 and stream_errors != -1:
+        stream_errors += 1
     else:
         stream_errors = 0
+        seek_time = 0
+
+    if stream_errors == 1:
+        await filter_formats(current_track)
+        await load_track(ctx, vc_connection, current_track)
+        return print("Probably Error 403: Glitched Stream")
+    elif stream_errors == 2:
+        for track in range(current_track, len(queue)):
+            queue[track].pop("formats")
+        await filter_formats(current_track)
+        await load_track(ctx, vc_connection, current_track)
+        print("Probably Error 403: Expired Links")
+        return
+
+    elif stream_errors > 3:
+        current_track += 1
+        await filter_formats(current_track)
+        await load_track(ctx, vc_connection, current_track)
+        return await ctx.send(f"Track failed to play. Count = {stream_errors} times.")
 
     if loop_type != 1:
         await skip(ctx)
     if current_track + 1 <= len(queue):
         await filter_formats(current_track)
-        load_track(ctx, vc_connection, current_track)
+        await load_track(ctx, vc_connection, current_track)
     elif loop_type == 2:
         current_track = 0
         await filter_formats(current_track)
-        load_track(ctx, vc_connection, current_track)
+        await load_track(ctx, vc_connection, current_track)
 
 
 @client.command(aliases=["dc", "disconnect", "kys"])
@@ -289,6 +362,8 @@ async def leave(ctx):
         elif vc_connection.channel != ctx.author.voice.channel:
             return await ctx.reply("You must be in MY voice channel where everyone is at to use music commands")
         await ctx.reply("Sayonara!")
+        global current_track, stream_errors
+        stream_errors = -2
         await vc_connection.disconnect(force=True)
     else:
         await ctx.reply("I already left >:(")
@@ -316,8 +391,8 @@ async def pause(ctx):
 
 @client.command(aliases=["next"])
 async def skip(ctx):
-    command = ctx.invoked_with.lower()
-    global current_track, ref_time
+    command = ctx.invoked_with
+    global current_track, stream_errors
     if command == "next" or command == "skip":
         vc_connection = await check_voice(ctx)
         if isinstance(vc_connection, discord.message.Message):
@@ -325,21 +400,16 @@ async def skip(ctx):
         if not await vc_manners(ctx, vc_connection):
             return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
-        if current_track + 1 >= len(queue) and loop_type != 2:
+        if current_track + 1 >= len(queue):
             await ctx.reply("No more tracks in queue.")
-        elif loop_type == 2:
-            track_info = queue[current_track + 1]
-            await ctx.reply(f":fast_forward: Skipping track to `Track #{current_track + 1}` | "
-                            f"[{track_info['title']}]")
-            # (https://www.youtube.com/watch?v={track_info['id']})
         else:
             track_info = queue[current_track + 1]
             await ctx.reply(f":fast_forward: Skipping track to `Track #{current_track + 1}` | "
                             f"[{track_info['title']}]")
             # (https://www.youtube.com/watch?v={track_info['id']})
-        ref_time = 0
         if loop_type == 1:
             current_track += 1
+        stream_errors = -1
         vc_connection.stop()
     elif current_track < len(queue):
         current_track += 1
@@ -355,14 +425,14 @@ async def q(ctx):
     next10 = current_track+11
     q_desc = f''
     if next10 > len(queue):
-        next10 = current_track + next10 - len(queue)
+        next10 = len(queue)
     for index, track_info in enumerate(queue[current_track+1:next10]):
         q_desc += f'**Track #{index+current_track+1}** | '\
-                 f'**[{track_info["title"]}](https://www.youtube.com/watch?v={track_info["id"]})**\n'\
+                 f'[{track_info["title"]}](https://www.youtube.com/watch?v={track_info["id"]})\n'\
                  f'... `Requested By:` {track_info["Requester"]}\n\n'
 
     q_embed = discord.Embed(description=q_desc, colour=embed_colour)
-    q_embed.set_author(name="🎶 Next 10 in Queue 🎶")
+    q_embed.set_author(name=f"🎶 Next 10 in Queue 🎶")
 
     # Embed Total Duration as Footer
     duration = time.time() - ref_time
@@ -382,9 +452,13 @@ async def clearq(ctx):
     if not await vc_manners(ctx, vc_connection):
         return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
-    global current_track
+    global current_track, seek_time
     await ctx.reply(":dvd: Clearing All Tracks!")
     queue.clear()
+    current_track = 0
+    seek_time = 0
+    global stream_errors
+    stream_errors = -1
     vc_connection.stop()
 
 
@@ -396,7 +470,7 @@ async def prev(ctx):
     if not await vc_manners(ctx, vc_connection):
         return await ctx.reply("Your role is not a `DJ`, so let others enjoy the music too.")
 
-    global current_track
+    global current_track, stream_errors
     if current_track == 0:
         await ctx.reply("Nothing to backtrack.")
     else:
@@ -404,13 +478,14 @@ async def prev(ctx):
         await ctx.reply(f":rewind: Backtracking track to `Track #{current_track - 1}` | "
                         f"[{track_info['title']}]")
         # (https://www.youtube.com/watch?v={track_info['id']})
+        stream_errors = -1
         current_track -= 2
         if loop_type == 1:
             current_track += 1
         if vc_connection.is_playing():
             vc_connection.stop()
         else:
-            await play(ctx)
+            await auto_next(ctx)
 
 
 @client.command()
@@ -448,7 +523,7 @@ async def switch(ctx, num=""):
         return
 
     num = int(num)
-    global current_track
+    global current_track, stream_errors
     if num == current_track and queue:
         await ctx.reply("I'm playing that Track right now.")
     elif num > len(queue) - 1 or num < 0 or not queue:
@@ -459,7 +534,11 @@ async def switch(ctx, num=""):
                         f"[{track_info['title']}]")
         # (https: // www.youtube.com / watch?v={track_info['id']})
         current_track = num - 1
-        vc_connection.stop()
+        stream_errors = -1
+        if vc_connection.is_playing():
+            vc_connection.stop()
+        else:
+            await auto_next(ctx)
 
 
 @client.command()
@@ -471,7 +550,7 @@ async def loop(ctx):
     global loop_type
     loop_type += 1
     if loop_type == 1:
-        await ctx.reply(":repeat_one: Current track will be looped.")
+        await ctx.reply(":repeat_one: Single tracks will be looped.")
     elif loop_type == 2:
         await ctx.reply(":repeat: Playlist will be looped.")
     if loop_type > 2:
@@ -496,11 +575,11 @@ async def now(ctx):
 
         # Embed
         np_embed = discord.Embed(
-            description=f'**[{track_info["title"]}](https://www.youtube.com/watch?v={track_info["id"]})**\n'
+            description=f'{loop_gui()}**[{track_info["title"]}](https://www.youtube.com/watch?v={track_info["id"]})**\n'
                         f'**Track #{current_track}** | '
                         f'`{time_passed} / {duration}`\n\n**Requested By:** {track_info["Requester"]}\n'
                         f'**Up Next:** {next_track}', colour=embed_colour)
-        np_embed.set_author(name="🎶 Now Playing 🎶", icon_url=embed_icon)
+        np_embed.set_author(name=f"🎶 Now Playing 🎶", icon_url=embed_icon)
         np_embed.set_thumbnail(url=track_info["Thumbnail URL"])
         await ctx.send(embed=np_embed)
     else:
@@ -531,6 +610,8 @@ async def remove(ctx, num=f""):
         # (https://www.youtube.com/watch?v={track_info['id']})
         queue.pop(num)
         if num == current_track:
+            global stream_errors
+            stream_errors = -1
             vc_connection.stop()
 
 
@@ -545,7 +626,7 @@ async def seek(ctx, seek_t=""):
     if not vc_connection.is_playing() and not vc_connection.is_paused():
         return await ctx.reply("Cannot seek without a video")
 
-    global current_track, seek_time
+    global current_track, seek_time, stream_errors
     time_decode = seek_t.split(":")
     multipliers = len(time_decode)
     for multiplier in range(multipliers):
@@ -565,6 +646,7 @@ async def seek(ctx, seek_t=""):
     await ctx.reply(f"Seeking to timestamp: `{seek_t}`")
     current_track -= 1
     seek_time = secs
+    stream_errors = -1
     vc_connection.stop()
 
 
