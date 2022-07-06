@@ -40,7 +40,7 @@ pause_time = 0
 seek_time = 0
 embed_icon = "https://music.youtube.com/img/favicon_144.png"
 embed_colour = 0xff0000
-version = "Alpha-Danielle V0.1.0.5"
+version = "Alpha-Danielle V0.1.0.5b"
 stream = ()
 
 
@@ -52,35 +52,28 @@ async def on_ready():
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    vc_connection = nextcord.utils.get(client.voice_clients, guild=member.guild)
+    async def save_session_time():
+        global seek_time, current_track, stream_errors, pause_time, ref_time
+        if pause_time:
+            seek_time = pause_time - ref_time - 1
+        else:
+            seek_time = time.time() - ref_time - 1
+            pause_time = time.time() - 1
+        stream_errors = -2
+        if seek_time < 0 or not queue or current_track >= len(queue):
+            seek_time = 0
+            pause_time = 0
+            ref_time = 0
+        await client.change_presence(activity=nextcord.Game(name=version))
 
-    global seek_time, current_track, stream_errors, pause_time
+    vc_connection = nextcord.utils.get(client.voice_clients, guild=member.guild)
     if before.channel is not None and before.channel != after.channel:
         if member == client.user:
-            if pause_time:
-                seek_time = pause_time - ref_time - 1
-            else:
-                seek_time = time.time() - ref_time - 1
-                pause_time = time.time() - 1
-            stream_errors = -2
-            if seek_time < 0 or not queue:
-                seek_time = 0
-                pause_time = 0
-            await client.change_presence(activity=nextcord.Game(name=version))
+            await save_session_time()
         elif member != client.user and vc_connection:
             if before.channel == vc_connection.channel and len(vc_connection.channel.members) == 1:
-                seek_time = time.time() - ref_time
-                if pause_time:
-                    seek_time = pause_time - ref_time - 1
-                else:
-                    seek_time = time.time() - ref_time - 1
-                    pause_time = time.time() -1
-                stream_errors = -2
-                if seek_time < 0 or not queue:
-                    seek_time = 0
-                    pause_time = 0
+                await save_session_time()
                 await vc_connection.disconnect(force=True)
-                await client.change_presence(activity=nextcord.Game(name=version))
 
 
 async def check_voice(ctx):
@@ -166,6 +159,10 @@ async def play(ctx, *, search=""):
     if isinstance(vc_connection, nextcord.message.Message):
         return
 
+    is_resumed_session = False
+    if stream_errors == -2:
+        is_resumed_session = True
+
     global current_track
 
     current_loop = asyncio.get_running_loop()
@@ -229,7 +226,7 @@ async def play(ctx, *, search=""):
             await filter_formats(current_track)
             await load_track(ctx, vc_connection, current_track)
 
-        # Post Processing. Notice it comes after playing the track? EFFICIENCY
+        # GUI
         nq_thumb_url = queue[len_q_old]["Thumbnail URL"]
         try:
             if meta["_type"] == "playlist":
@@ -253,11 +250,17 @@ async def play(ctx, *, search=""):
                 raise KeyError
         # Not playlist
         except KeyError:
+            tracks_ahead = len(queue) - 1 - current_track
+            if is_resumed_session:
+                return
+            elif tracks_ahead <= 0:
+                return await now(ctx)
+
             # Embed
             nq_embed = nextcord.Embed(
                 description=f'{loop_gui()}**[{meta["title"]}](https://www.youtube.com/watch?v={meta["id"]})**\n\n'
                             f'**Track #{len(queue) - 1}**\n'
-                            f'**Tracks Ahead:** {len(queue) - 1 - current_track}',
+                            f'**Tracks Ahead:** {tracks_ahead}',
                             colour=embed_colour)
             nq_embed.set_author(name="➕ Adding track to Queue ➕",
                                 icon_url=embed_icon)
@@ -279,6 +282,7 @@ async def play(ctx, *, search=""):
         if not vc_connection.is_playing() and not vc_connection.is_paused():
             if current_track > len(queue) - 1:
                 current_track = 0
+            await filter_formats(current_track)
             await auto_next(ctx)
         else:
             await pause(ctx)
@@ -332,7 +336,7 @@ async def load_track(ctx, vc_connection, track: int):
 
 async def auto_next(ctx):
     vc_connection = nextcord.utils.get(client.voice_clients, guild=ctx.guild)
-    global current_track, stream_errors, seek_time
+    global current_track, stream_errors, seek_time, pause_time
 
     # Detect Errors Pass 1
     if stream_errors == -2 or stream_errors == -1:
@@ -529,6 +533,7 @@ async def prev(ctx):
         if vc_connection.is_playing():
             vc_connection.stop()
         else:
+            await filter_formats(current_track)
             await auto_next(ctx)
 
 
@@ -583,6 +588,7 @@ async def switch(ctx, num=""):
         if vc_connection.is_playing():
             vc_connection.stop()
         else:
+            await filter_formats(current_track)
             await auto_next(ctx)
 
 
@@ -701,11 +707,12 @@ async def seek(ctx, seek_t=""):
 
 @client.command()
 async def load_test_case(ctx):
-    global queue, current_track, seek_time, stream_errors
+    global queue, current_track, seek_time, stream_errors, ref_time
     with open("test2.json", "r") as file:
         queue = json.load(file)
-    current_track = 1
-    stream_errors = 0
+    current_track = 2
+    stream_errors = -2
     seek_time = 0
+    ref_time = 0
 
 client.run(os.getenv("DISCORD_TOKEN"))
