@@ -35,12 +35,12 @@ start_task = False
 current_track = 0
 stream_errors = 0
 loop_type = 0
-ref_time = time.time()
+ref_time = 0
 pause_time = 0
 seek_time = 0
 embed_icon = "https://music.youtube.com/img/favicon_144.png"
 embed_colour = 0xff0000
-version = "Alpha-Danielle V0.1.0.5b"
+version = "Alpha-Danielle V0.1.0.6"
 stream = ()
 
 
@@ -254,7 +254,7 @@ async def play(ctx, *, search=""):
             if is_resumed_session:
                 return
             elif tracks_ahead <= 0:
-                return await now(ctx)
+                return await now(ctx, force=True)
 
             # Embed
             nq_embed = nextcord.Embed(
@@ -321,7 +321,7 @@ async def load_track(ctx, vc_connection, track: int):
         stream_errors = 0
         if queue:
             await ctx.send(":floppy_disk: Attempting to load previous session...")
-            await now(ctx)
+            await now(ctx, force=True)
     else:
         ref_time = time.time() - seek_time
 
@@ -352,8 +352,6 @@ async def auto_next(ctx):
     # Detect Errors Pass 2
     if stream_errors == -1:
         stream_errors = 0
-    elif time.time() - ref_time < queue[current_track]["duration"]-1 or stream_errors == -2:
-        pass
 
     if stream_errors > 2:
         current_track += 1
@@ -376,6 +374,8 @@ async def auto_next(ctx):
     if loop_type != 1 and stream_errors != -2 and not seek_time:
         await skip(ctx)
     if current_track + 1 <= len(queue):
+        print(current_track)
+        print(len(queue))
         await filter_formats(current_track)
         await load_track(ctx, vc_connection, current_track)
     elif loop_type == 2:
@@ -610,9 +610,9 @@ async def loop(ctx):
 
 
 @client.command(aliases=["np"])
-async def now(ctx):
+async def now(ctx, force=False):
     vc_connection = nextcord.utils.get(client.voice_clients, guild=ctx.guild)
-    if vc_connection and (vc_connection.is_playing() or vc_connection.is_paused()):
+    if force or (vc_connection and (vc_connection.is_playing() or vc_connection.is_paused())):
         track_info = queue[current_track]
         duration = time_convert(round(track_info["duration"]))
         if pause_time:
@@ -665,10 +665,14 @@ async def remove(ctx, num=f""):
                         f"[{track_info['title']}]")
         # (https://www.youtube.com/watch?v={track_info['id']})
         queue.pop(num)
+        global stream_errors, seek_time, current_track
         if num == current_track:
-            global stream_errors
             stream_errors = -1
+            seek_time = 0
+            current_track -= 1
             vc_connection.stop()
+        elif num < current_track:
+            current_track -= 1
 
 
 @client.command()
@@ -706,13 +710,15 @@ async def seek(ctx, seek_t=""):
 
 
 @client.command()
-async def load_test_case(ctx):
-    global queue, current_track, seek_time, stream_errors, ref_time
+async def test(ctx):
+    global queue, current_track, seek_time, stream_errors, ref_time, pause_time
     with open("test2.json", "r") as file:
         queue = json.load(file)
     current_track = 2
     stream_errors = -2
-    seek_time = 0
+    seek_time = 40
     ref_time = 0
+    pause_time = ref_time + seek_time
+
 
 client.run(os.getenv("DISCORD_TOKEN"))
